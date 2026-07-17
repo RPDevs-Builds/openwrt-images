@@ -45,8 +45,8 @@ jobs:
 
       - name: Apply Baseline Configuration
         run: |
-          # Inject the specific buildinfo file to act as our configuration seed
-          cp "2026-06-20_r35920-d23120ca5e_next-r4.9.0.rss.mtk/targets/mediatek/filogic/config.buildinfo" openwrt-build/.config
+          # Dynamically pull the exact config.buildinfo from pesa1234's raw repository
+          wget -O openwrt-build/.config "https://raw.githubusercontent.com/pesa1234/MT6000_cust_build/refs/heads/main/2026-06-20_r35920-d23120ca5e_next-r4.9.0.rss.mtk/targets/mediatek/filogic/config.buildinfo"
           
           cd openwrt-build
           
