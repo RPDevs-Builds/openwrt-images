@@ -19,9 +19,17 @@ jobs:
 
       - name: Clone OpenWrt & Checkout Specific Commit
         run: |
-          git clone https://git.openwrt.org/openwrt/openwrt.git openwrt-build
+          mkdir openwrt-build
           cd openwrt-build
-          git checkout d23120ca5e819612d1911def8d4d54aecfa5549e
+          git init
+          # Pivot to the GitHub mirror which retains detached/orphaned snapshot commits
+          git remote add origin https://github.com/openwrt/openwrt.git
+          
+          # Force a targeted sparse fetch of the exact commit, bypassing HEAD
+          git fetch --depth 1 origin d23120ca5e819612d1911def8d4d54aecfa5549e
+          
+          # Checkout the fetched tree deterministically
+          git checkout FETCH_HEAD
 
       - name: Inject pesa1234 Custom Feeds
         run: |
