@@ -1,0 +1,80 @@
+name: MT6000 Custom Build Pipeline
+
+# 1. COMPUTE PROTECTION: Prevent concurrent builds from crashing llmadmin01
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build_firmware:
+    name: Compile MT6000 Baseline
+    runs-on: [self-hosted, linux64] 
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Clone OpenWrt & Checkout Specific Commit
+        run: |
+          git clone https://git.openwrt.org/openwrt/openwrt.git openwrt-build
+          cd openwrt-build
+          git checkout d23120ca5e819612d1911def8d4d54aecfa5549e
+
+      - name: Inject pesa1234 Custom Feeds
+        run: |
+          cd openwrt-build
+          echo "src-git packages https://github.com/pesa1234/packages.git^f2077bf9cb4839271498f5786966304ab95dcfe1" > feeds.conf.default
+          echo "src-git luci https://github.com/pesa1234/luci.git^eb104ef50991286931ce4854de13fb5c6e028212" >> feeds.conf.default
+          echo "src-git routing https://git.openwrt.org/feed/routing.git^6ea029dcc96645836d34dbed56c05e7468916fdc" >> feeds.conf.default
+          echo "src-git telephony https://git.openwrt.org/feed/telephony.git^4d8d33a023b24c52cd9443b9dc201fbdfe9c6aef" >> feeds.conf.default
+          echo "src-git video https://github.com/openwrt/video.git^a951381b6c58b9b1eb087f09c9a20cff4ffe8063" >> feeds.conf.default
+          
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      - name: Apply Baseline Configuration
+        run: |
+          cp .config openwrt-build/.config
+          cd openwrt-build
+          make defconfig
+
+      - name: Download Source Packages
+        run: |
+          cd openwrt-build
+          make download -j8
+
+      - name: Compile Firmware
+        run: |
+          cd openwrt-build
+          make -j$(nproc) V=s
+
+      - name: Stage Artifacts for Release
+        id: stage_release
+        run: |
+          # Dynamically grab the short SHA for versioning
+          echo "VERSION=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+          mkdir -p release-assets
+          cp openwrt-build/bin/targets/mediatek/filogic/*sysupgrade.bin release-assets/
+          cp openwrt-build/bin/targets/mediatek/filogic/*.manifest release-assets/
+          cp openwrt-build/bin/targets/mediatek/filogic/config.buildinfo release-assets/
+
+      # 2. AUTOMATED PUBLISHING: Mimics the deployment pattern in your build-engine
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "mt6000-build-${{ steps.stage_release.outputs.VERSION }}" \
+            --title "GL-MT6000 Firmware (${{ steps.stage_release.outputs.VERSION }})" \
+            --notes "Automated build of the MT6000 firmware stack." \
+            release-assets/*
+
+      # 3. FAILSAFE TEARDOWN: Ensures the runner doesn't permanently lose 30GB of space
+      - name: Runner Housekeeping
+        if: always()
+        run: |
+          echo "Cleaning up heavy OpenWrt build directories..."
+          rm -rf openwrt-build
+          rm -rf release-assets
