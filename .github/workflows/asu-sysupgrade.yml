@@ -1,0 +1,117 @@
+name: OpenWrt Attended Sysupgrade (ASU) Firmware Generator
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 'OpenWrt Target Architecture'
+        required: true
+        default: 'mediatek/filogic'
+      profile:
+        description: 'Device Profile Name'
+        required: true
+        default: 'glinet_gl-mt6000'
+      version:
+        description: 'OpenWrt Release Version'
+        required: true
+        default: '24.10.0'
+      packages:
+        description: 'Custom Package List (space separated)'
+        required: false
+        default: 'luci-app-attendedsysupgrade kmod-nft-tproxy bash curl ca-certificates'
+      asu_url:
+        description: 'ASU Server API Base URL'
+        required: true
+        default: 'http://localhost:8000'
+
+permissions:
+  contents: write
+
+jobs:
+  asu-build:
+    name: Generate Firmware via ASU
+    runs-on: [self-hosted, linux64]
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Request Image Generation from ASU API
+        id: request_build
+        env:
+          ASU_URL: ${{ inputs.asu_url }}
+          TARGET: ${{ inputs.target }}
+          PROFILE: ${{ inputs.profile }}
+          VERSION: ${{ inputs.version }}
+          PACKAGES: ${{ inputs.packages }}
+        run: |
+          echo "Submitting build request to ASU endpoint: ${ASU_URL}/api/v2/build"
+          
+          # Construct JSON Payload
+          PAYLOAD=$(jq -n \
+            --arg target "$TARGET" \
+            --arg profile "$PROFILE" \
+            --arg version "$VERSION" \
+            --arg packages "$PACKAGES" \
+            '{target: $target, profile: $profile, version: $version, packages: ($packages | split(" "))}')
+
+          # Submit request
+          RESP=$(curl -s -X POST "${ASU_URL}/api/v2/build" \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD")
+
+          echo "Response: $RESP"
+          HASH=$(echo "$RESP" | jq -r '.request_hash // .hash // empty')
+          
+          if [ -z "$HASH" ]; then
+            echo "❌ Failed to retrieve request hash from ASU server."
+            exit 1
+          fi
+
+          echo "REQUEST_HASH=${HASH}" >> $GITHUB_OUTPUT
+          echo "✅ Submitted build request with hash: ${HASH}"
+
+      - name: Poll Build Status
+        id: poll_status
+        env:
+          ASU_URL: ${{ inputs.asu_url }}
+          HASH: ${{ steps.request_build.outputs.REQUEST_HASH }}
+        run: |
+          echo "Polling status for request ${HASH}..."
+          for i in {1..60}; do
+            STATUS_RESP=$(curl -s "${ASU_URL}/api/v2/status/${HASH}")
+            STATUS=$(echo "$STATUS_RESP" | jq -r '.status')
+            echo "Attempt $i: Status is '${STATUS}'"
+
+            if [ "$STATUS" = "success" ]; then
+              IMAGE_URL=$(echo "$STATUS_RESP" | jq -r '.image_url // .images[0].url')
+              echo "IMAGE_URL=${IMAGE_URL}" >> $GITHUB_OUTPUT
+              echo "✅ Build completed successfully!"
+              exit 0
+            elif [ "$STATUS" = "failed" ]; then
+              echo "❌ ASU Build Failed: $(echo "$STATUS_RESP" | jq -r '.error // "Unknown error"')"
+              exit 1
+            fi
+
+            sleep 5
+          done
+
+          echo "❌ Timed out waiting for ASU build to complete."
+          exit 1
+
+      - name: Download Firmware Artifact
+        run: |
+          IMAGE_URL="${{ steps.poll_status.outputs.IMAGE_URL }}"
+          mkdir -p release-assets
+          echo "Downloading sysupgrade binary from: ${IMAGE_URL}"
+          curl -sL "${IMAGE_URL}" -o release-assets/sysupgrade.bin
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ inputs.version }}-${{ inputs.profile }}"
+          gh release create "asu-sysupgrade-${VERSION}" \
+            --title "OpenWrt ${inputs.version} (${inputs.profile})" \
+            --notes "Generated via Attended Sysupgrade (ASU) ImageBuilder." \
+            release-assets/sysupgrade.bin || echo "Release created or updated."
