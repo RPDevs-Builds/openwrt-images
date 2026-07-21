@@ -1,0 +1,67 @@
+name: OpenWrt Images Build Pipeline (Hybrid Escalation)
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 'OpenWrt Target Architecture'
+        required: true
+        default: 'mediatek/filogic'
+      profile:
+        description: 'Device Profile Name'
+        required: true
+        default: 'glinet_gl-mt6000'
+
+permissions:
+  contents: write
+
+jobs:
+  determine-tier:
+    runs-on: ubuntu-latest
+    outputs:
+      start_tier: ${{ steps.calc.outputs.tier }}
+      hosted_runner: ${{ steps.calc.outputs.hosted_runner }}
+    steps:
+      - name: Calculate Escalation Tier
+        id: calc
+        run: |
+          echo "hosted_runner=ubuntu-latest" >> $GITHUB_OUTPUT
+          # General compilation starts on hosted runner with 15m escalation timeout
+          echo "tier=hosted" >> $GITHUB_OUTPUT
+
+  try-hosted:
+    needs: determine-tier
+    if: needs.determine-tier.outputs.start_tier == 'hosted'
+    runs-on: ${{ needs.determine-tier.outputs.hosted_runner }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Image
+        run: |
+          echo "Building image for target ${{ inputs.target }} profile ${{ inputs.profile }} on hosted runner..."
+
+  try-medium:
+    needs: [determine-tier, try-hosted]
+    if: always() && (needs.determine-tier.outputs.start_tier == 'medium' || needs.try-hosted.result == 'failure')
+    runs-on: [self-hosted, linux64, medium]
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Image (Medium Tier)
+        run: |
+          echo "Building image for target ${{ inputs.target }} profile ${{ inputs.profile }} on self-hosted medium runner..."
+
+  try-heavy:
+    needs: [determine-tier, try-medium]
+    if: always() && (needs.determine-tier.outputs.start_tier == 'heavy' || needs.try-medium.result == 'failure')
+    runs-on: [self-hosted, linux64, heavy, llmadmin01]
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Image (Heavy Tier)
+        run: |
+          echo "Building image for target ${{ inputs.target }} profile ${{ inputs.profile }} on self-hosted heavy runner..."
