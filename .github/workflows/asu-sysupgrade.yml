@@ -22,7 +22,7 @@ on:
       asu_url:
         description: 'ASU Server API Base URL'
         required: true
-        default: 'http://localhost:8000'
+        default: 'https://sysupgrade.iamrp.dev'
 
 permissions:
   contents: write
